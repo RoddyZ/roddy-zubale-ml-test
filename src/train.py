@@ -197,7 +197,13 @@ def train_eval(
         search.fit(X_train, y_train)
         pipe = search.best_estimator_
     else:
-        pipe.fit(X_train, y_train)
+        pipe.fit(
+        X_train,
+        y_train,
+        model__eval_set=[(pre.fit(X_train, y_train).transform(X_val), y_val)],
+        model__early_stopping_rounds=30,
+        model__verbose=False,
+        )
 
     # Evaluate
     y_proba = pipe.predict_proba(X_val)[:, 1]
