@@ -30,12 +30,12 @@ from typing import List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
-    precision_recall_curve,
     roc_auc_score,
 )
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
@@ -106,13 +106,17 @@ def load_data(path: str) -> pd.DataFrame:
 
 
 def build_preprocessor() -> ColumnTransformer:
+    # Handle sklearn version differences
+    skl_version = tuple(map(int, sklearn.__version__.split(".")[:2]))
+    if skl_version >= (1, 2):
+        ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False, dtype=np.float32)
+    else:
+        ohe = OneHotEncoder(handle_unknown="ignore", sparse=False, dtype=np.float32)
+
     cat_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "ohe",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=False, dtype=np.float32),
-            ),
+            ("ohe", ohe),
         ]
     )
     num_pipe = Pipeline(
@@ -127,14 +131,12 @@ def build_preprocessor() -> ColumnTransformer:
             ("num", num_pipe, NUM_COLS),
         ],
         remainder="drop",
-        sparse_threshold=0.0,
     )
     return pre
 
 
 def build_model() -> object:
     if _HAS_XGB:
-        # Reasonable defaults for tabular binary classification; deterministic
         return XGBClassifier(
             n_estimators=400,
             max_depth=6,
@@ -154,7 +156,6 @@ def build_model() -> object:
         return LogisticRegression(
             max_iter=2000,
             solver="lbfgs",
-            n_jobs=None,
         )
 
 
@@ -175,7 +176,6 @@ def train_eval(
     pipe = Pipeline(steps=[("pre", pre), ("model", model)])
 
     if _HAS_XGB and cfg.hpo_trials and cfg.hpo_trials > 0:
-        # Randomized search over a compact, robust space
         param_dist = {
             "model__n_estimators": [200, 300, 400, 600],
             "model__max_depth": [4, 6, 8],
@@ -197,17 +197,7 @@ def train_eval(
         search.fit(X_train, y_train)
         pipe = search.best_estimator_
     else:
-        # Fit with early-stopping when using XGB
-        if _HAS_XGB:
-            pipe.fit(
-                X_train,
-                y_train,
-                model__eval_set=[(pre.fit_transform(X_val), y_val)],
-                model__verbose=False,
-                model__early_stopping_rounds=30,
-            )
-        else:
-            pipe.fit(X_train, y_train)
+        pipe.fit(X_train, y_train)
 
     # Evaluate
     y_proba = pipe.predict_proba(X_val)[:, 1]
@@ -228,17 +218,13 @@ def train_eval(
         "model": "xgboost" if _HAS_XGB else "logistic_regression",
     }
 
-    # Collect feature names after preprocessing to map importances
     pre_fitted = pipe.named_steps["pre"]
     feature_names = list(pre_fitted.get_feature_names_out(CAT_COLS + NUM_COLS))
 
-    # Compute importances if model supports it
     try:
         importances = pipe.named_steps["model"].feature_importances_
-        importances = np.asarray(importances, dtype=float)
         feat_importances = np.vstack([feature_names, importances]).T
     except Exception:
-        # Fallback: use absolute coefficients for linear models
         try:
             coefs = pipe.named_steps["model"].coef_.ravel()
             feat_importances = np.vstack([feature_names, np.abs(coefs)]).T
@@ -256,21 +242,16 @@ def save_artifacts(
 ) -> None:
     os.makedirs(outdir, exist_ok=True)
 
-    # Save model and preprocessing pipeline separately for clarity
-    # (Pipeline saved whole as model.pkl for inference convenience)
     model_path = os.path.join(outdir, "model.pkl")
     joblib.dump(pipe, model_path)
 
-    # Also save the preprocessing step alone
     feat_pipe_path = os.path.join(outdir, "feature_pipeline.pkl")
     joblib.dump(pipe.named_steps["pre"], feat_pipe_path)
 
-    # Save metrics json
     metrics_path = os.path.join(outdir, "metrics.json")
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
-    # Save feature importances
     fi_df = pd.DataFrame(feat_importances, columns=["feature", "importance"]) \
         .assign(importance=lambda d: pd.to_numeric(d["importance"], errors="coerce")) \
         .sort_values("importance", ascending=False)
@@ -305,7 +286,6 @@ def main(argv: List[str] | None = None) -> int:
     df = load_data(cfg.data_path)
     pipe, metrics, feat_importances, _ = train_eval(df, cfg)
 
-    # Acceptance check (per spec)
     if metrics["roc_auc"] < 0.83:
         warnings.warn(
             f"ROC-AUC {metrics['roc_auc']:.4f} < 0.83 — consider enabling --hpo-trials or revisiting features."
@@ -313,7 +293,6 @@ def main(argv: List[str] | None = None) -> int:
 
     save_artifacts(pipe, metrics, feat_importances, cfg.outdir)
 
-    # Pretty print summary
     print("\n=== Validation Metrics ===")
     for k in ("roc_auc", "pr_auc", "accuracy"):
         print(f"{k}: {metrics[k]:.6f}")

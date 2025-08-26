@@ -1,0 +1,10 @@
+{
+  "roc_auc": 0.931604,
+  "pr_auc": 0.870968,
+  "accuracy": 0.866875,
+  "timestamp": 1756226225,
+  "git_sha": "eda3ab0",
+  "test_size": 0.2,
+  "random_state": 42,
+  "model": "xgboost"
+}
