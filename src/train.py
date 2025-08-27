@@ -31,47 +31,19 @@ from typing import List, Tuple
 import joblib
 import numpy as np
 import pandas as pd
-import sklearn
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# Prefer xgboost; fall back to logistic regression if not available
-try:
-    from xgboost import XGBClassifier
-    _HAS_XGB = True
-except Exception:  # pragma: no cover
-    from sklearn.linear_model import LogisticRegression
-    _HAS_XGB = False
-    warnings.warn("xgboost not available — falling back to LogisticRegression.")
+# Importamos de nuestros módulos
+from src.features import build_preprocessor, CAT_COLS, NUM_COLS
+from src.models import build_model
+from src.metrics import compute_metrics
 
 RANDOM_SEED = 42
 np.random.seed(RANDOM_SEED)
 
-CAT_COLS: List[str] = [
-    "plan_type",           # {Basic, Standard, Pro}
-    "contract_type",       # {Monthly, Annual}
-    "autopay",             # {Yes, No}
-    "is_promo_user",       # {Yes, No}
-]
-NUM_COLS: List[str] = [
-    "add_on_count",
-    "tenure_months",
-    "monthly_usage_gb",
-    "avg_latency_ms",
-    "support_tickets_30d",
-    "discount_pct",
-    "payment_failures_90d",
-    "downtime_hours_30d",
-]
 TARGET_COL = "churned"
+
 
 @dataclass
 class TrainConfig:
@@ -85,7 +57,6 @@ class TrainConfig:
 def _git_sha() -> str | None:
     """Return short git SHA if available, else None."""
     import subprocess
-
     try:
         sha = (
             subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL)
@@ -106,60 +77,6 @@ def load_data(path: str) -> pd.DataFrame:
     return df
 
 
-def build_preprocessor() -> ColumnTransformer:
-    # Handle sklearn version differences
-    skl_version = tuple(map(int, sklearn.__version__.split(".")[:2]))
-    if skl_version >= (1, 2):
-        ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False, dtype=np.float32)
-    else:
-        ohe = OneHotEncoder(handle_unknown="ignore", sparse=False, dtype=np.float32)
-
-    cat_pipe = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("ohe", ohe),
-        ]
-    )
-    num_pipe = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler(with_mean=True, with_std=True)),
-        ]
-    )
-    pre = ColumnTransformer(
-        transformers=[
-            ("cat", cat_pipe, CAT_COLS),
-            ("num", num_pipe, NUM_COLS),
-        ],
-        remainder="drop",
-    )
-    return pre
-
-
-def build_model() -> object:
-    if _HAS_XGB:
-        return XGBClassifier(
-            n_estimators=400,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_lambda=1.0,
-            random_state=RANDOM_SEED,
-            objective="binary:logistic",
-            n_jobs=0,
-            tree_method="hist",
-            eval_metric="logloss",
-        )
-    else:
-        from sklearn.linear_model import LogisticRegression
-
-        return LogisticRegression(
-            max_iter=2000,
-            solver="lbfgs",
-        )
-
-
 def train_eval(
     df: pd.DataFrame,
     cfg: TrainConfig,
@@ -173,10 +90,10 @@ def train_eval(
 
     pre = build_preprocessor()
     model = build_model()
-
     pipe = Pipeline(steps=[("pre", pre), ("model", model)])
 
-    if _HAS_XGB and cfg.hpo_trials and cfg.hpo_trials > 0:
+    # Randomized HPO si corresponde
+    if hasattr(model, "fit") and cfg.hpo_trials and cfg.hpo_trials > 0:
         param_dist = {
             "model__n_estimators": [200, 300, 400, 600],
             "model__max_depth": [4, 6, 8],
@@ -198,32 +115,29 @@ def train_eval(
         search.fit(X_train, y_train)
         pipe = search.best_estimator_
     else:
-        pipe.fit(
-        X_train,
-        y_train,
-        model__eval_set=[(pre.fit(X_train, y_train).transform(X_val), y_val)],
-        model__early_stopping_rounds=30,
-        model__verbose=False,
-        )
+        # early stopping solo si es XGBoost
+        try:
+            pipe.fit(
+                X_train,
+                y_train,
+                model__eval_set=[(pre.fit(X_train, y_train).transform(X_val), y_val)],
+                model__early_stopping_rounds=30,
+                model__verbose=False,
+            )
+        except TypeError:
+            # Modelos sklearn no aceptan esos kwargs
+            pipe.fit(X_train, y_train)
 
     # Evaluate
     y_proba = pipe.predict_proba(X_val)[:, 1]
-    y_pred = (y_proba >= 0.5).astype(int)
-
-    roc_auc = float(roc_auc_score(y_val, y_proba))
-    pr_auc = float(average_precision_score(y_val, y_proba))
-    acc = float(accuracy_score(y_val, y_pred))
-
-    metrics = {
-        "roc_auc": round(roc_auc, 6),
-        "pr_auc": round(pr_auc, 6),
-        "accuracy": round(acc, 6),
+    metrics = compute_metrics(y_val, y_proba)
+    metrics.update({
         "timestamp": int(time.time()),
         "git_sha": _git_sha(),
         "test_size": cfg.test_size,
         "random_state": cfg.random_state,
-        "model": "xgboost" if _HAS_XGB else "logistic_regression",
-    }
+        "model": pipe.named_steps["model"].__class__.__name__,
+    })
 
     pre_fitted = pipe.named_steps["pre"]
     feature_names = list(pre_fitted.get_feature_names_out(CAT_COLS + NUM_COLS))
