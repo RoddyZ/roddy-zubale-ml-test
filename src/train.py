@@ -1,3 +1,4 @@
+#CLI: python -m src.train --data data/customer_churn_synth.csv --outdir artifacts/
 #!/usr/bin/env python3
 """
 Mini-Prod ML Challenge — Part A (Train)

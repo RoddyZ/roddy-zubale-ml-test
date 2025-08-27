@@ -1,34 +1,28 @@
 # TODO: Train, assert artifacts exist and ROC-AUC threshold
-import os
 import json
-import pytest
+import os
 import subprocess
+import sys
 
-ARTIFACTS_DIR = "artifacts"
+def test_training_creates_artifacts(tmp_path):
+    """Ejecuta el script de entrenamiento y valida que genere los artifacts."""
+    outdir = tmp_path / "artifacts"
+    outdir.mkdir()
 
-def test_training_script_runs():
-    """Ejecuta el script de entrenamiento y revisa que se generen artifacts."""
-    # Borrar artifacts previos si existen
-    if os.path.exists(ARTIFACTS_DIR):
-        for f in os.listdir(ARTIFACTS_DIR):
-            os.remove(os.path.join(ARTIFACTS_DIR, f))
-    else:
-        os.makedirs(ARTIFACTS_DIR)
+    # Ejecutar train.py como script
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "src.train",
+            "--data", "data/customer_churn_synth.csv",
+            "--outdir", str(outdir)
+        ],
+        capture_output=True,
+        text=True,
+    )
+    # Debe terminar correctamente
+    assert result.returncode == 0, f"train.py failed: {result.stderr}"
 
-    # Ejecutar entrenamiento con dataset oficial
-    cmd = [
-        "python",
-        "-m",
-        "src.train",
-        "--data",
-        "data/customer_churn_synth.csv",
-        "--outdir",
-        ARTIFACTS_DIR,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    assert result.returncode == 0, f"Train script failed: {result.stderr}"
-
-    # Checar archivos generados
+    # Archivos esperados
     expected_files = [
         "model.pkl",
         "feature_pipeline.pkl",
@@ -36,16 +30,17 @@ def test_training_script_runs():
         "feature_importances.csv",
     ]
     for fname in expected_files:
-        assert os.path.exists(os.path.join(ARTIFACTS_DIR, fname)), f"{fname} missing"
+        path = outdir / fname
+        assert path.exists(), f"{fname} was not created"
 
-def test_metrics_quality():
-    """Revisa que el ROC-AUC sea ≥ 0.83."""
-    metrics_path = os.path.join(ARTIFACTS_DIR, "metrics.json")
-    assert os.path.exists(metrics_path), "metrics.json not found"
-
-    with open(metrics_path, "r") as f:
+    # Revisar métricas
+    metrics_path = outdir / "metrics.json"
+    with open(metrics_path, "r", encoding="utf-8") as f:
         metrics = json.load(f)
 
+    assert "roc_auc" in metrics
+    assert "pr_auc" in metrics
+    assert "accuracy" in metrics
+
+    # Validación mínima: ROC-AUC ≥ 0.83
     assert metrics["roc_auc"] >= 0.83, f"ROC-AUC too low: {metrics['roc_auc']}"
-    assert 0.0 <= metrics["pr_auc"] <= 1.0
-    assert 0.0 <= metrics["accuracy"] <= 1.0
