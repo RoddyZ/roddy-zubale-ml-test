@@ -4,7 +4,8 @@ import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
+
 
 # Cargar el pipeline completo (preprocesador + modelo)
 pipe = joblib.load("artifacts/model.pkl")
@@ -23,8 +24,7 @@ class CustomerFeatures(BaseModel):
     support_tickets_30d: float
     discount_pct: float
     payment_failures_90d: float
-    downtime_hours_30d: float
-
+    downtime_hours_30d: Optional[float] = 0.0 
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -33,6 +33,9 @@ def health():
 def predict(rows: List[CustomerFeatures]):
     try:
         df = pd.DataFrame([r.dict() for r in rows])
+        # aseguramos columna downtime_hours_30d
+        if "downtime_hours_30d" not in df.columns:
+            df["downtime_hours_30d"] = 0.0
 
         # El pipeline ya se encarga de todo (preprocesar + modelar)
         probs = pipe.predict_proba(df)[:, 1]

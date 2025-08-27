@@ -1,7 +1,8 @@
 # TODO: Boot API, call /predict using tests/sample.json
 import json
-import os
 from fastapi.testclient import TestClient
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.app import app
 
 client = TestClient(app)
