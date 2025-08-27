@@ -1,0 +1,7 @@
+actions:
+- trigger_retraining
+- raise_thresholds
+findings:
+  latency_p95_ms: 474
+rationale: p95 latency 474ms > 400ms
+status: warn
