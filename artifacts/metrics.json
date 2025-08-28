@@ -2,8 +2,8 @@
   "roc_auc": 0.9322261413340199,
   "pr_auc": 0.871879672304771,
   "accuracy": 0.8702083333333334,
-  "timestamp": 1756311186,
-  "git_sha": "be53977",
+  "timestamp": 1756336004,
+  "git_sha": "394f715",
   "test_size": 0.2,
   "random_state": 42,
   "model": "XGBClassifier"
